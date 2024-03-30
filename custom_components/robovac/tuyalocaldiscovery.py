@@ -42,16 +42,39 @@ class TuyaLocalDiscovery(asyncio.DatagramProtocol):
         for transport, _ in self._listeners:
             transport.close()
 
-    def datagram_received(self, data, addr):
-        data = data[20:-8]
+def datagram_received(self, data, addr):
+    # Remove header and footer from data if present
+    data = data[20:-8]  # Assuming the relevant data is between these indexes
+
+    # Check if data is likely to be encrypted
+    if len(data) % 16 == 0:  # AES block size is 16 bytes
         try:
             cipher = Cipher(algorithms.AES(UDP_KEY), modes.ECB(), default_backend())
             decryptor = cipher.decryptor()
             padded_data = decryptor.update(data) + decryptor.finalize()
-            data = padded_data[: -ord(padded_data[len(padded_data) - 1 :])]
+            # Remove PKCS7 padding
+            pad_length = padded_data[-1]
+            data = padded_data[:-pad_length]
 
-        except Exception:
-            data = data.decode()
+        except ValueError as e:
+            _LOGGER.error(f"Decryption failed: {e}")
+            return  # Handle decryption failure appropriately
 
-        decoded = json.loads(data)
-        asyncio.ensure_future(self.discovered_callback(decoded))
+        try:
+            decoded = json.loads(data)
+        except json.JSONDecodeError as e:
+            _LOGGER.error(f"JSON decoding failed: {e}")
+            return  # Handle JSON decoding failure appropriately
+
+    else:
+        # Handle non-encrypted data, assuming it's UTF-8 encoded JSON
+        try:
+            decoded = json.loads(data.decode())
+        except UnicodeDecodeError as e:
+            _LOGGER.error(f"UTF-8 decoding failed: {e}")
+            return  # Handle decoding failure appropriately
+        except json.JSONDecodeError as e:
+            _LOGGER.error(f"JSON decoding failed: {e}")
+            return  # Handle JSON decoding failure appropriately
+
+    asyncio.ensure_future(self.discovered_callback(decoded))
